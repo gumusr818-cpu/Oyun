@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>P2P Blob.io - Tek Dosya Multiplayer</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #1a1a1a; font-family: sans-serif; touch-action: none; color: white; }
+    canvas { display: block; }
+    #lobby {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      background: rgba(0,0,0,0.85); padding: 25px; border-radius: 12px; text-align: center;
+      box-shadow: 0 0 20px rgba(0,255,200,0.3); z-index: 10; width: 85%; max-width: 320px;
+    }
+    input, button {
+      width: 100%; padding: 12px; margin: 8px 0; border-radius: 8px; border: none;
+      font-size: 16px; box-sizing: border-box;
+    }
+    button { background: #00e676; color: black; font-weight: bold; cursor: pointer; }
+    #ui { position: absolute; top: 15px; left: 15px; font-size: 18px; font-weight: bold; pointer-events: none; }
+  </style>
+</head>
+<body>
+
+  <div id="ui">Skor: <span id="score">0</span></div>
+
+  <div id="lobby">
+    <h2>Blob.io P2P</h2>
+    <p id="peer-id-display">KOD ÜRETİLİYOR...</p>
+    <button onclick="createRoom()">Oda Kur (Host Ol)</button>
+    <hr style="border-color:#444; margin:15px 0;">
+    <input type="text" id="join-id" placeholder="Oda Kodunu Yapıştır">
+    <button onclick="joinRoom()" style="background:#0288d1; color:white;">Odaya Katıl</button>
+  </div>
+
+  <canvas id="gameCanvas"></canvas>
+
+  <!-- PeerJS kütüphanesi (Harici sunucu kurmadan P2P bağlantı sağlar) -->
+  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    let peer, conn;
+    let isHost = false;
+    let myId = Math.random().toString(36).substring(7);
+
+    let players = {};
+    let foods = [];
+    let touchPos = { x: canvas.width / 2, y: canvas.height / 2 };
+
+    // Oyuncu objesi
+    players[myId] = {
+      x: Math.random() * 1500 + 100,
+      y: Math.random() * 1500 + 100,
+      radius: 20,
+      color: `hsl(${Math.random() * 360}, 80%, 50%)`,
+      score: 0
+    };
+
+    // Yemleri Oluştur
+    for (let i = 0; i < 100; i++) {
+      foods.push({
+        x: Math.random() * 1800 + 50,
+        y: Math.random() * 1800 + 50,
+        color: `hsl(${Math.random() * 360}, 70%, 50%)`
+      });
+    }
+
+    // PeerJS Bağlantısını Başlat
+    peer = new Peer();
+
+    peer.on('open', (id) => {
+      document.getElementById('peer-id-display').innerText = "SENİN ODA KODUN:\n" + id;
+    });
+
+    function createRoom() {
+      isHost = true;
+      document.getElementById('lobby').style.display = 'none';
+      peer.on('connection', (c) => {
+        conn = c;
+        setupConnection();
+      });
+      requestAnimationFrame(gameLoop);
+    }
+
+    function joinRoom() {
+      const hostId = document.getElementById('join-id').value.trim();
+      if (!hostId) return alert("Lütfen geçerli bir Oda Kodu girin!");
+      conn = peer.connect(hostId);
+      document.getElementById('lobby').style.display = 'none';
+      setupConnection();
+      requestAnimationFrame(gameLoop);
+    }
+
+    function setupConnection() {
+      conn.on('data', (data) => {
+        if (data.type === 'state') {
+          players = data.players;
+          foods = data.foods;
+        } else if (data.type === 'move') {
+          if (players[data.id]) {
+            players[data.id].x = data.x;
+            players[data.id].y = data.y;
+            players[data.id].radius = data.radius;
+            players[data.id].score = data.score;
+          }
+        }
+      });
+    }
+
+    // Dokunma ve Fare Kontrolü
+    window.addEventListener('touchmove', (e) => {
+      touchPos = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    });
+    window.addEventListener('mousemove', (e) => {
+      touchPos = { x: e.clientX, y: e.clientY };
+    });
+
+    function updateLogic() {
+      const me = players[myId];
+      if (!me) return;
+
+      const dx = touchPos.x - (canvas.width / 2);
+      const dy = touchPos.y - (canvas.height / 2);
+      const dist = Math.hypot(dx, dy);
+
+      if (dist > 10) {
+        const speed = Math.max(2, 7 - me.radius * 0.04);
+        me.x += (dx / dist) * speed;
+        me.y += (dy / dist) * speed;
+      }
+
+      // Yem yeme kontrolü
+      foods.forEach((f, index) => {
+        if (Math.hypot(me.x - f.x, me.y - f.y) < me.radius) {
+          me.radius += 0.4;
+          me.score += 10;
+          foods[index] = {
+            x: Math.random() * 1800 + 50,
+            y: Math.random() * 1800 + 50,
+            color: `hsl(${Math.random() * 360}, 70%, 50%)`
+          };
+        }
+      });
+
+      // Bağlantı üzerinden durumu paylaş
+      if (conn && conn.open) {
+        if (isHost) {
+          conn.send({ type: 'state', players, foods });
+        } else {
+          conn.send({ type: 'move', id: myId, x: me.x, y: me.y, radius: me.radius, score: me.score });
+        }
+      }
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const me = players[myId];
+      if (!me) return;
+
+      document.getElementById('score').innerText = Math.floor(me.score);
+
+      ctx.save();
+      ctx.translate(canvas.width / 2 - me.x, canvas.height / 2 - me.y);
+
+      // Yemleri Çiz
+      foods.forEach(f => {
+        ctx.beginPath(); ctx.arc(f.x, f.y, 6, 0, Math.PI * 2);
+        ctx.fillStyle = f.color; ctx.fill();
+      });
+
+      // Oyuncuları Çiz
+      Object.keys(players).forEach(id => {
+        const p = players[id];
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        ctx.fillStyle = p.color; ctx.fill();
+        ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 3; ctx.stroke();
+      });
+
+      ctx.restore();
+    }
+
+    function gameLoop() {
+      updateLogic();
+      draw();
+      requestAnimationFrame(gameLoop);
+    }
+  </script>
+</body>
+</html>
